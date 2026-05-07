@@ -11,7 +11,7 @@ TMDB API-Key: https://www.themoviedb.org/settings/api
 # ══════════════════════════════════════════════════════════════════════════════
 #  KONFIGURATION – hier deinen TMDB API-Key eintragen
 # ══════════════════════════════════════════════════════════════════════════════
-TMDB_API_KEY = "DEIN_API_KEY_HIER"
+TMDB_API_KEY = ""
 
 # Zukünftige Staffeln/Episoden standardmäßig ausblenden?
 # True  = nur bereits ausgestrahlte Inhalte werden verglichen
@@ -53,8 +53,8 @@ except ImportError:
 
 # ── Regex ─────────────────────────────────────────────────────────────────────
 
-# S01E01, S01E01E02, s1e1 usw.
-EP_REGEX = re.compile(r"[Ss](\d{1,2})[Ee](\d{1,2})(?:[Ee](\d{1,2}))?")
+# S01E01, S01E01E02, S01E01-E02, s1e1 usw.
+EP_REGEX = re.compile(r"[Ss](\d{1,2})[Ee](\d{1,2})(?:[-]?[Ee](\d{1,2}))?")
 
 # Staffel-Ordner: S01, S1, Season 1, Staffel 2 usw.
 SEASON_DIR_RE = re.compile(
@@ -121,6 +121,9 @@ class TMDB:
           6. Mit Umlauten (en-US)
         Gibt (Ergebnisliste, genutzte Query) zurück.
         """
+        import re as _re2, unicodedata as _ud
+        name = _ud.normalize("NFC", name)
+        name = _re2.sub(r" \(\d{4}\)$", "", name).strip()
         with_umlauts = apply_umlauts(name)
         stripped = strip_articles(name)
         stripped_umlauts = apply_umlauts(stripped)
@@ -217,6 +220,8 @@ def normalize_name(raw: str) -> str:
     Bereinigt Ordner-/Dateinamen zu einem lesbaren Serientitel.
     Alles vor dem ersten S##E## gilt als Serienname.
     """
+    import unicodedata as _ud
+    raw = _ud.normalize("NFC", raw)  # macOS NFD-Umlaute -> NFC
     m = EP_REGEX.search(raw)
     if m:
         raw = raw[: m.start()]
@@ -438,7 +443,21 @@ def check_series(
         )
 
         try:
-            search_results, used_query = tmdb.search_smart(series_name)
+            import unicodedata, re as _re
+            # Fix 1: NFD-Umlaute (macOS) → NFC normalisieren (ä statt a+combining)
+            search_name = unicodedata.normalize("NFC", series_name)
+            # Fix 2: Doppeltes Jahr entfernen z.B. "Magnum (2018) (2018)" → "Magnum (2018)"
+            search_name = _re.sub(r"(\s*\(\d{4}\))\s*\(\d{4}\)$", r"\1", search_name)
+            # Fix 3: {tmdb XXXX} direkt als TMDB-ID nutzen
+            tmdb_id_match = _re.search(r"\{tmdb[- ](\d+)\}", search_name, _re.IGNORECASE)
+            if tmdb_id_match:
+                forced_id = int(tmdb_id_match.group(1))
+                det = tmdb.get_series_details(forced_id)
+                forced_name = det.get("name") or det.get("original_name", series_name)
+                search_results = [{"id": forced_id, "name": forced_name}]
+                used_query = f"{{tmdb {forced_id}}}"
+            else:
+                search_results, used_query = tmdb.search_smart(search_name)
         except requests.RequestException as e:
             print(f"  {Fore.RED}API-Fehler: {e}")
             continue
